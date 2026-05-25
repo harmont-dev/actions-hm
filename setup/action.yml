@@ -38,25 +38,30 @@ runs:
     - name: Resolve version
       id: version
       shell: bash
-      run: |
-        tag=$("${{ github.action_path }}/../scripts/resolve-version.sh" "${{ inputs.version }}")
-        echo "tag=$tag" >> "$GITHUB_OUTPUT"
       env:
+        INPUT_VERSION: ${{ inputs.version }}
         GITHUB_TOKEN: ${{ inputs.token }}
+      run: |
+        tag=$("${{ github.action_path }}/../scripts/resolve-version.sh" "$INPUT_VERSION")
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
     - name: Install hm
       id: install
       shell: bash
+      env:
+        INPUT_TAG: ${{ steps.version.outputs.tag }}
       run: |
-        "${{ github.action_path }}/../scripts/install-hm.sh" "${{ steps.version.outputs.tag }}"
+        "${{ github.action_path }}/../scripts/install-hm.sh" "$INPUT_TAG"
 
     - name: Install Python DSL
       if: inputs.install-python-dsl == 'true'
       shell: bash
+      env:
+        INPUT_DSL_VERSION: ${{ inputs.python-dsl-version }}
       run: |
         pip_spec="harmont"
-        if [[ -n "${{ inputs.python-dsl-version }}" ]]; then
-          pip_spec="harmont==${{ inputs.python-dsl-version }}"
+        if [[ -n "$INPUT_DSL_VERSION" ]]; then
+          pip_spec="harmont==${INPUT_DSL_VERSION}"
         fi
         echo "::group::Installing harmont Python DSL"
         pip install "$pip_spec"

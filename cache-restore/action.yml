@@ -33,10 +33,13 @@ runs:
           ${{ inputs.cache-key-prefix }}-
 
     - name: Load Docker images from cache
-      if: steps.restore.outputs.cache-hit != ''
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
-        echo "::group::Loading cached Docker images"
-        hm cache restore .harmont-cache/
-        echo "::endgroup::"
+        if [ -d .harmont-cache ] && [ "$(ls -A .harmont-cache 2>/dev/null)" ]; then
+          echo "::group::Loading cached Docker images"
+          hm cache restore .harmont-cache/
+          echo "::endgroup::"
+        else
+          echo "No cached images found, skipping restore"
+        fi

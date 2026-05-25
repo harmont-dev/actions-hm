@@ -85,17 +85,19 @@ runs:
       working-directory: ${{ inputs.working-directory }}
       env:
         HM_NONINTERACTIVE: '1'
+        INPUT_PIPELINE: ${{ inputs.pipeline }}
+        INPUT_PARALLELISM: ${{ inputs.parallelism }}
+        INPUT_EXTRA_ARGS: ${{ inputs.extra-args }}
       run: |
         args=()
-        if [[ -n "${{ inputs.pipeline }}" ]]; then
-          args+=("${{ inputs.pipeline }}")
+        if [[ -n "$INPUT_PIPELINE" ]]; then
+          args+=("$INPUT_PIPELINE")
         fi
-        if [[ -n "${{ inputs.parallelism }}" ]]; then
-          args+=("--parallelism" "${{ inputs.parallelism }}")
+        if [[ -n "$INPUT_PARALLELISM" ]]; then
+          args+=("--parallelism" "$INPUT_PARALLELISM")
         fi
-        if [[ -n "${{ inputs.extra-args }}" ]]; then
-          # Word-split extra-args intentionally
-          read -ra extra <<< "${{ inputs.extra-args }}"
+        if [[ -n "$INPUT_EXTRA_ARGS" ]]; then
+          read -ra extra <<< "$INPUT_EXTRA_ARGS"
           args+=("${extra[@]}")
         fi
         hm run "${args[@]}"
