@@ -1,0 +1,42 @@
+name: Restore Harmont Cache
+description: >
+  Restore Docker image cache for harmont pipelines.
+  Uses content-addressed GHA cache with prefix matching
+  to always get the most recent cache entry.
+
+inputs:
+  cache-key-prefix:
+    description: >
+      Prefix for the cache key. Bump this to force a full cache rebuild.
+    required: false
+    default: harmont-v1
+  working-directory:
+    description: Directory where .harmont-cache/ lives (usually repo root)
+    required: false
+    default: .
+
+outputs:
+  cache-hit:
+    description: Whether a cache entry was restored
+    value: ${{ steps.restore.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Restore GHA cache
+      id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ inputs.working-directory }}/.harmont-cache/
+        key: ${{ inputs.cache-key-prefix }}-will-never-match
+        restore-keys: |
+          ${{ inputs.cache-key-prefix }}-
+
+    - name: Load Docker images from cache
+      if: steps.restore.outputs.cache-hit != ''
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        echo "::group::Loading cached Docker images"
+        hm cache restore .harmont-cache/
+        echo "::endgroup::"
