@@ -1,0 +1,109 @@
+name: Harmont
+description: >
+  Run a harmont pipeline in GitHub Actions with automatic Docker
+  image caching. One step to go from zero to running pipelines.
+
+branding:
+  icon: terminal
+  color: purple
+
+inputs:
+  pipeline:
+    description: >
+      Pipeline slug to run (e.g. 'ci'). If omitted and the repo has
+      only one pipeline, harmont auto-selects it.
+    required: false
+    default: ''
+  version:
+    description: hm CLI version ('latest' or semver like '0.5.0')
+    required: false
+    default: latest
+  working-directory:
+    description: >
+      Path to the repo root where .harmont/ pipelines live.
+    required: false
+    default: .
+  parallelism:
+    description: >
+      Max concurrent pipeline chains. Defaults to host CPU count.
+    required: false
+    default: ''
+  cache:
+    description: Enable Docker image caching between runs
+    required: false
+    default: 'true'
+  cache-key-prefix:
+    description: Cache key prefix. Bump to force full cache rebuild.
+    required: false
+    default: harmont-v1
+  install-python-dsl:
+    description: Install the harmont Python DSL from PyPI
+    required: false
+    default: 'true'
+  python-dsl-version:
+    description: Pinned version of harmont PyPI package
+    required: false
+    default: ''
+  extra-args:
+    description: Additional arguments passed to 'hm run'
+    required: false
+    default: ''
+  token:
+    description: GitHub token for API access
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  hm-version:
+    description: Installed hm CLI version
+    value: ${{ steps.setup.outputs.hm-version }}
+
+runs:
+  using: composite
+  steps:
+    # --- Setup ---
+    - name: Setup Harmont
+      id: setup
+      uses: ./setup
+      with:
+        version: ${{ inputs.version }}
+        install-python-dsl: ${{ inputs.install-python-dsl }}
+        python-dsl-version: ${{ inputs.python-dsl-version }}
+        token: ${{ inputs.token }}
+
+    # --- Cache Restore ---
+    - name: Restore Docker cache
+      if: inputs.cache == 'true'
+      uses: ./cache-restore
+      with:
+        cache-key-prefix: ${{ inputs.cache-key-prefix }}
+        working-directory: ${{ inputs.working-directory }}
+
+    # --- Run Pipeline ---
+    - name: Run harmont pipeline
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        HM_NONINTERACTIVE: '1'
+      run: |
+        args=()
+        if [[ -n "${{ inputs.pipeline }}" ]]; then
+          args+=("${{ inputs.pipeline }}")
+        fi
+        if [[ -n "${{ inputs.parallelism }}" ]]; then
+          args+=("--parallelism" "${{ inputs.parallelism }}")
+        fi
+        if [[ -n "${{ inputs.extra-args }}" ]]; then
+          # Word-split extra-args intentionally
+          read -ra extra <<< "${{ inputs.extra-args }}"
+          args+=("${extra[@]}")
+        fi
+        hm run "${args[@]}"
+
+    # --- Cache Save ---
+    - name: Save Docker cache
+      if: always() && inputs.cache == 'true'
+      uses: ./cache-save
+      with:
+        cache-key-prefix: ${{ inputs.cache-key-prefix }}
+        working-directory: ${{ inputs.working-directory }}
