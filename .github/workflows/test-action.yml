@@ -1,0 +1,75 @@
+name: Test Action
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  all-in-one:
+    name: All-in-one action
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run harmont via all-in-one action
+        uses: ./
+        with:
+          pipeline: hello
+          working-directory: tests/fixtures
+          cache: 'true'
+
+  granular:
+    name: Granular sub-actions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup hm
+        uses: ./setup
+        with:
+          version: latest
+          install-python-dsl: 'true'
+
+      - name: Restore cache
+        uses: ./cache-restore
+
+      - name: Run pipeline manually
+        working-directory: tests/fixtures
+        env:
+          HM_NONINTERACTIVE: '1'
+        run: hm run hello
+
+      - name: Save cache
+        if: always()
+        uses: ./cache-save
+
+  setup-only:
+    name: Setup only (verify install)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup hm
+        id: setup
+        uses: ./setup
+        with:
+          version: latest
+
+      - name: Verify hm is on PATH
+        run: |
+          hm --version
+          echo "Installed version: ${{ steps.setup.outputs.hm-version }}"
