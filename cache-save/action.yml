@@ -1,0 +1,36 @@
+name: Save Harmont Cache
+description: >
+  Save Docker image cache after a harmont pipeline run.
+  Exports images via 'hm cache save' and uploads to GHA cache
+  with a content-addressed key. Use with 'if: always()' to save
+  cache even when the pipeline fails.
+
+inputs:
+  cache-key-prefix:
+    description: >
+      Must match the prefix used in cache-restore. Bump to force rebuild.
+    required: false
+    default: harmont-v1
+  working-directory:
+    description: Directory where .harmont-cache/ lives (usually repo root)
+    required: false
+    default: .
+
+runs:
+  using: composite
+  steps:
+    - name: Export Docker images to cache dir
+      id: manifest
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        echo "::group::Saving Docker images"
+        hash=$(hm cache save .harmont-cache/)
+        echo "cache-key=${{ inputs.cache-key-prefix }}-${hash}" >> "$GITHUB_OUTPUT"
+        echo "::endgroup::"
+
+    - name: Upload cache
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ inputs.working-directory }}/.harmont-cache/
+        key: ${{ steps.manifest.outputs.cache-key }}
