@@ -25,7 +25,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install bats
-        run: |
-          sudo apt-get update && sudo apt-get install -y bats
+        run: sudo apt-get update && sudo apt-get install -y bats
       - name: Run tests
         run: bats tests/*.bats
+
+  yaml-lint:
+    name: Validate action YAML
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate all action.yml files
+        run: |
+          for f in action.yml setup/action.yml cache-restore/action.yml cache-save/action.yml; do
+            echo "Validating $f..."
+            python3 -c "import yaml; yaml.safe_load(open('$f'))"
+          done
+          echo "All action YAML files valid."
