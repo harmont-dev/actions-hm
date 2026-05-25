@@ -1,26 +1,53 @@
 name: Save Harmont Cache
 description: >
   Save Docker image cache after a harmont pipeline run.
-  Exports images via 'hm cache save' and uploads to GHA cache
-  with a content-addressed key. Use with 'if: always()' to save
-  cache even when the pipeline fails.
+  Supports two backends: GHA cache (default) or container registry (GHCR).
+  Use with 'if: always()' to save cache even when the pipeline fails.
 
 inputs:
+  backend:
+    description: >
+      Cache backend: 'gha' uses GitHub Actions cache,
+      'registry' uses GitHub Container Registry.
+    required: false
+    default: gha
   cache-key-prefix:
     description: >
       Must match the prefix used in cache-restore. Bump to force rebuild.
+      Only used with backend 'gha'.
     required: false
     default: harmont-v1
+  registry:
+    description: >
+      Container registry to push cached images to.
+      Only used with backend 'registry'.
+    required: false
+    default: ghcr.io
+  registry-prefix:
+    description: >
+      Registry path prefix for cached images. Defaults to
+      ghcr.io/<owner>/<repo>/harmont-cache.
+      Only used with backend 'registry'.
+    required: false
+    default: ''
   working-directory:
     description: Directory where .harmont-cache/ lives (usually repo root)
     required: false
     default: .
+  token:
+    description: >
+      Token for registry authentication. Needs packages:write scope.
+      Only used with backend 'registry'.
+    required: false
+    default: ${{ github.token }}
 
 runs:
   using: composite
   steps:
+    # --- GHA backend ---
     - name: Export Docker images to cache dir
-      id: manifest
+      if: inputs.backend == 'gha'
+      id: manifest-gha
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
@@ -29,8 +56,62 @@ runs:
         echo "cache-key=${{ inputs.cache-key-prefix }}-${hash}" >> "$GITHUB_OUTPUT"
         echo "::endgroup::"
 
-    - name: Upload cache
+    - name: Upload GHA cache
+      if: inputs.backend == 'gha'
       uses: actions/cache/save@v4
       with:
         path: ${{ inputs.working-directory }}/.harmont-cache/
-        key: ${{ steps.manifest.outputs.cache-key }}
+        key: ${{ steps.manifest-gha.outputs.cache-key }}
+
+    # --- Registry backend ---
+    - name: Login to container registry
+      if: inputs.backend == 'registry'
+      shell: bash
+      env:
+        INPUT_REGISTRY: ${{ inputs.registry }}
+        INPUT_TOKEN: ${{ inputs.token }}
+      run: |
+        echo "$INPUT_TOKEN" | docker login "$INPUT_REGISTRY" -u __token__ --password-stdin
+
+    - name: Push images to registry
+      if: inputs.backend == 'registry'
+      shell: bash
+      env:
+        INPUT_REGISTRY_PREFIX: ${{ inputs.registry-prefix }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        INPUT_REGISTRY: ${{ inputs.registry }}
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        prefix="${INPUT_REGISTRY_PREFIX:-${INPUT_REGISTRY}/${GITHUB_REPOSITORY}/harmont-cache}"
+
+        # Run hm cache save to get the manifest (also exports tars, but we won't use them)
+        echo "::group::Exporting image metadata"
+        hm cache save .harmont-cache/ > /dev/null
+        echo "::endgroup::"
+
+        if [ ! -f .harmont-cache/manifest.json ]; then
+          echo "No manifest produced, nothing to push"
+          exit 0
+        fi
+
+        echo "::group::Pushing images to registry"
+        pushed=0
+        while IFS= read -r line; do
+          tar_name=$(echo "$line" | cut -d'|' -f1)
+          tag=$(echo "$line" | cut -d'|' -f2)
+
+          # Derive registry tag: harmont-local/step:hash -> prefix/step:hash
+          registry_tag="${prefix}/${tag#harmont-local/}"
+
+          docker tag "$tag" "$registry_tag"
+          if docker push "$registry_tag"; then
+            pushed=$((pushed + 1))
+          fi
+        done < <(python3 -c "
+        import json
+        m = json.load(open('.harmont-cache/manifest.json'))
+        for k, v in m['images'].items():
+            print(f'{k}|{v}')
+        ")
+        echo "::endgroup::"
+        echo "Pushed $pushed images to registry"

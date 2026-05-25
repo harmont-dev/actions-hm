@@ -1,30 +1,57 @@
 name: Restore Harmont Cache
 description: >
   Restore Docker image cache for harmont pipelines.
-  Uses content-addressed GHA cache with prefix matching
-  to always get the most recent cache entry.
+  Supports two backends: GHA cache (default) or container registry (GHCR).
 
 inputs:
+  backend:
+    description: >
+      Cache backend: 'gha' uses GitHub Actions cache (10GB limit, simple),
+      'registry' uses GitHub Container Registry (no size limit, layer dedup).
+    required: false
+    default: gha
   cache-key-prefix:
     description: >
-      Prefix for the cache key. Bump this to force a full cache rebuild.
+      Prefix for the GHA cache key. Bump to force a full cache rebuild.
+      Only used with backend 'gha'.
     required: false
     default: harmont-v1
+  registry:
+    description: >
+      Container registry to pull cached images from.
+      Only used with backend 'registry'.
+    required: false
+    default: ghcr.io
+  registry-prefix:
+    description: >
+      Registry path prefix for cached images. Defaults to
+      ghcr.io/<owner>/<repo>/harmont-cache.
+      Only used with backend 'registry'.
+    required: false
+    default: ''
   working-directory:
     description: Directory where .harmont-cache/ lives (usually repo root)
     required: false
     default: .
+  token:
+    description: >
+      Token for registry authentication. Needs packages:read scope.
+      Only used with backend 'registry'.
+    required: false
+    default: ${{ github.token }}
 
 outputs:
   cache-hit:
     description: Whether a cache entry was restored
-    value: ${{ steps.restore.outputs.cache-hit }}
+    value: ${{ steps.restore-gha.outputs.cache-hit || steps.restore-registry.outputs.restored }}
 
 runs:
   using: composite
   steps:
+    # --- GHA backend ---
     - name: Restore GHA cache
-      id: restore
+      id: restore-gha
+      if: inputs.backend == 'gha'
       uses: actions/cache/restore@v4
       with:
         path: ${{ inputs.working-directory }}/.harmont-cache/
@@ -32,7 +59,8 @@ runs:
         restore-keys: |
           ${{ inputs.cache-key-prefix }}-
 
-    - name: Load Docker images from cache
+    - name: Load Docker images from GHA cache
+      if: inputs.backend == 'gha'
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
@@ -42,4 +70,67 @@ runs:
           echo "::endgroup::"
         else
           echo "No cached images found, skipping restore"
+        fi
+
+    # --- Registry backend ---
+    - name: Login to container registry
+      if: inputs.backend == 'registry'
+      shell: bash
+      env:
+        INPUT_REGISTRY: ${{ inputs.registry }}
+        INPUT_TOKEN: ${{ inputs.token }}
+      run: |
+        echo "$INPUT_TOKEN" | docker login "$INPUT_REGISTRY" -u __token__ --password-stdin
+
+    - name: Pull cached images from registry
+      id: restore-registry
+      if: inputs.backend == 'registry'
+      shell: bash
+      env:
+        INPUT_REGISTRY_PREFIX: ${{ inputs.registry-prefix }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        INPUT_REGISTRY: ${{ inputs.registry }}
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        prefix="${INPUT_REGISTRY_PREFIX:-${INPUT_REGISTRY}/${GITHUB_REPOSITORY}/harmont-cache}"
+        restored=0
+
+        if [ -f .harmont-cache/manifest.json ]; then
+          manifest=".harmont-cache/manifest.json"
+        else
+          # Try pulling the manifest image to bootstrap
+          if docker pull "${prefix}/manifest:latest" 2>/dev/null; then
+            mkdir -p .harmont-cache
+            docker save "${prefix}/manifest:latest" | tar -xf - -O manifest.json > .harmont-cache/manifest.json 2>/dev/null || true
+          fi
+          manifest=".harmont-cache/manifest.json"
+        fi
+
+        if [ ! -f "$manifest" ]; then
+          echo "No manifest found, cold start"
+          echo "restored=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        echo "::group::Pulling cached images from registry"
+        # Read manifest and pull each image
+        while IFS= read -r tar_name; do
+          tag=$(python3 -c "import json,sys; m=json.load(open('$manifest')); print(m['images']['$tar_name'])" 2>/dev/null) || continue
+          # Derive registry tag from the harmont-local tag
+          # harmont-local/step:hash -> prefix/step:hash
+          registry_tag="${prefix}/${tag#harmont-local/}"
+
+          if docker pull "$registry_tag" 2>/dev/null; then
+            # Re-tag as harmont-local so hm recognizes it
+            docker tag "$registry_tag" "$tag"
+            restored=$((restored + 1))
+          fi
+        done < <(python3 -c "import json; m=json.load(open('$manifest')); [print(k) for k in m['images']]" 2>/dev/null)
+        echo "::endgroup::"
+
+        echo "Restored $restored images from registry"
+        if [ "$restored" -gt 0 ]; then
+          echo "restored=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "restored=false" >> "$GITHUB_OUTPUT"
         fi

@@ -32,16 +32,34 @@ inputs:
     description: Enable Docker image caching between runs
     required: false
     default: 'true'
+  cache-backend:
+    description: >
+      Cache backend: 'gha' (GitHub Actions cache, 10GB limit) or
+      'registry' (container registry, no size limit, layer dedup).
+    required: false
+    default: gha
   cache-key-prefix:
-    description: Cache key prefix. Bump to force full cache rebuild.
+    description: >
+      Cache key prefix (gha backend only). Bump to force rebuild.
     required: false
     default: harmont-v1
+  cache-registry:
+    description: >
+      Container registry for image caching (registry backend only).
+    required: false
+    default: ghcr.io
+  cache-registry-prefix:
+    description: >
+      Registry path prefix (registry backend only). Defaults to
+      ghcr.io/<owner>/<repo>/harmont-cache.
+    required: false
+    default: ''
   extra-args:
     description: Additional arguments passed to 'hm run'
     required: false
     default: ''
   token:
-    description: GitHub token for API access
+    description: GitHub token for API access (also used for registry auth)
     required: false
     default: ${{ github.token }}
 
@@ -66,8 +84,12 @@ runs:
       if: inputs.cache == 'true'
       uses: ./cache-restore
       with:
+        backend: ${{ inputs.cache-backend }}
         cache-key-prefix: ${{ inputs.cache-key-prefix }}
+        registry: ${{ inputs.cache-registry }}
+        registry-prefix: ${{ inputs.cache-registry-prefix }}
         working-directory: ${{ inputs.working-directory }}
+        token: ${{ inputs.token }}
 
     # --- Run Pipeline ---
     - name: Run harmont pipeline
@@ -97,5 +119,9 @@ runs:
       if: always() && inputs.cache == 'true'
       uses: ./cache-save
       with:
+        backend: ${{ inputs.cache-backend }}
         cache-key-prefix: ${{ inputs.cache-key-prefix }}
+        registry: ${{ inputs.cache-registry }}
+        registry-prefix: ${{ inputs.cache-registry-prefix }}
         working-directory: ${{ inputs.working-directory }}
+        token: ${{ inputs.token }}
