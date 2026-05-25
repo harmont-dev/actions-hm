@@ -32,34 +32,31 @@ inputs:
     description: Enable Docker image caching between runs
     required: false
     default: 'true'
-  cache-backend:
-    description: >
-      Cache backend: 'gha' (GitHub Actions cache, 10GB limit) or
-      'registry' (container registry, no size limit, layer dedup).
-    required: false
-    default: gha
-  cache-key-prefix:
-    description: >
-      Cache key prefix (gha backend only). Bump to force rebuild.
-    required: false
-    default: harmont-v1
   cache-registry:
-    description: >
-      Container registry for image caching (registry backend only).
+    description: Container registry for image caching
     required: false
     default: ghcr.io
   cache-registry-prefix:
     description: >
-      Registry path prefix (registry backend only). Defaults to
+      Registry path prefix for cached images. Defaults to
       ghcr.io/<owner>/<repo>/harmont-cache.
     required: false
     default: ''
+  cache-cleanup:
+    description: Delete stale images from registry after save
+    required: false
+    default: 'true'
+  cache-cleanup-keep:
+    description: Number of old image versions to keep per step
+    required: false
+    default: '2'
   extra-args:
     description: Additional arguments passed to 'hm run'
     required: false
     default: ''
   token:
-    description: GitHub token for API access (also used for registry auth)
+    description: >
+      GitHub token (needs packages:write for cache, packages:delete for cleanup)
     required: false
     default: ${{ github.token }}
 
@@ -84,8 +81,6 @@ runs:
       if: inputs.cache == 'true'
       uses: ./cache-restore
       with:
-        backend: ${{ inputs.cache-backend }}
-        cache-key-prefix: ${{ inputs.cache-key-prefix }}
         registry: ${{ inputs.cache-registry }}
         registry-prefix: ${{ inputs.cache-registry-prefix }}
         working-directory: ${{ inputs.working-directory }}
@@ -119,9 +114,9 @@ runs:
       if: always() && inputs.cache == 'true'
       uses: ./cache-save
       with:
-        backend: ${{ inputs.cache-backend }}
-        cache-key-prefix: ${{ inputs.cache-key-prefix }}
         registry: ${{ inputs.cache-registry }}
         registry-prefix: ${{ inputs.cache-registry-prefix }}
         working-directory: ${{ inputs.working-directory }}
+        cleanup: ${{ inputs.cache-cleanup }}
+        cleanup-keep: ${{ inputs.cache-cleanup-keep }}
         token: ${{ inputs.token }}
