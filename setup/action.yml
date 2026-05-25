@@ -1,0 +1,63 @@
+name: Setup Harmont
+description: Install the hm CLI and optionally the harmont Python DSL
+
+inputs:
+  version:
+    description: >
+      hm version to install. Use 'latest' for the most recent release,
+      or pin to a specific version (e.g. '0.5.0' or 'v0.5.0').
+    required: false
+    default: latest
+  install-python-dsl:
+    description: >
+      Install the harmont Python DSL package. Set to 'true' if your
+      pipelines are written in Python (.harmont/*.py).
+    required: false
+    default: 'false'
+  python-dsl-version:
+    description: >
+      Version of the harmont PyPI package. Only used when
+      install-python-dsl is 'true'.
+    required: false
+    default: ''
+  token:
+    description: >
+      GitHub token for downloading release assets and API rate limits.
+      Defaults to the automatic GITHUB_TOKEN.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  hm-version:
+    description: Installed hm version string
+    value: ${{ steps.install.outputs.hm-version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve version
+      id: version
+      shell: bash
+      run: |
+        tag=$("${{ github.action_path }}/../scripts/resolve-version.sh" "${{ inputs.version }}")
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+
+    - name: Install hm
+      id: install
+      shell: bash
+      run: |
+        "${{ github.action_path }}/../scripts/install-hm.sh" "${{ steps.version.outputs.tag }}"
+
+    - name: Install Python DSL
+      if: inputs.install-python-dsl == 'true'
+      shell: bash
+      run: |
+        pip_spec="harmont"
+        if [[ -n "${{ inputs.python-dsl-version }}" ]]; then
+          pip_spec="harmont==${{ inputs.python-dsl-version }}"
+        fi
+        echo "::group::Installing harmont Python DSL"
+        pip install "$pip_spec"
+        echo "::endgroup::"
