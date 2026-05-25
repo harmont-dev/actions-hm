@@ -1,0 +1,6 @@
+# bats
+test_helper/
+tests/tmp/
+
+# OS
+.DS_Store
