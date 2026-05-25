@@ -36,14 +36,6 @@ inputs:
     description: Cache key prefix. Bump to force full cache rebuild.
     required: false
     default: harmont-v1
-  install-python-dsl:
-    description: Install the harmont Python DSL from PyPI
-    required: false
-    default: 'true'
-  python-dsl-version:
-    description: Pinned version of harmont PyPI package
-    required: false
-    default: ''
   extra-args:
     description: Additional arguments passed to 'hm run'
     required: false
@@ -67,8 +59,6 @@ runs:
       uses: ./setup
       with:
         version: ${{ inputs.version }}
-        install-python-dsl: ${{ inputs.install-python-dsl }}
-        python-dsl-version: ${{ inputs.python-dsl-version }}
         token: ${{ inputs.token }}
 
     # --- Cache Restore ---

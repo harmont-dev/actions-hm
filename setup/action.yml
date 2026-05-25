@@ -1,5 +1,5 @@
 name: Setup Harmont
-description: Install the hm CLI and optionally the harmont Python DSL
+description: Install the hm CLI with binary caching
 
 inputs:
   version:
@@ -8,18 +8,6 @@ inputs:
       or pin to a specific version (e.g. '0.5.0' or 'v0.5.0').
     required: false
     default: latest
-  install-python-dsl:
-    description: >
-      Install the harmont Python DSL package. Set to 'true' if your
-      pipelines are written in Python (.harmont/*.py).
-    required: false
-    default: 'false'
-  python-dsl-version:
-    description: >
-      Version of the harmont PyPI package. Only used when
-      install-python-dsl is 'true'.
-    required: false
-    default: ''
   token:
     description: >
       GitHub token for downloading release assets and API rate limits.
@@ -31,6 +19,9 @@ outputs:
   hm-version:
     description: Installed hm version string
     value: ${{ steps.install.outputs.hm-version }}
+  cache-hit:
+    description: Whether the hm binary was restored from cache
+    value: ${{ steps.cache.outputs.cache-hit }}
 
 runs:
   using: composite
@@ -45,24 +36,26 @@ runs:
         tag=$("${{ github.action_path }}/../scripts/resolve-version.sh" "$INPUT_VERSION")
         echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+    - name: Cache hm binary
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: /tmp/hm/bin
+        key: hm-${{ steps.version.outputs.tag }}-${{ runner.os }}-${{ runner.arch }}
+
     - name: Install hm
-      id: install
+      if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       env:
         INPUT_TAG: ${{ steps.version.outputs.tag }}
+        HM_INSTALL_DIR: /tmp/hm/bin
       run: |
-        "${{ github.action_path }}/../scripts/install-hm.sh" "$INPUT_TAG"
+        "${{ github.action_path }}/../scripts/install-hm.sh" "$INPUT_TAG" "$HM_INSTALL_DIR"
 
-    - name: Install Python DSL
-      if: inputs.install-python-dsl == 'true'
+    - name: Add hm to PATH and verify
+      id: install
       shell: bash
-      env:
-        INPUT_DSL_VERSION: ${{ inputs.python-dsl-version }}
       run: |
-        pip_spec="harmont"
-        if [[ -n "$INPUT_DSL_VERSION" ]]; then
-          pip_spec="harmont==${INPUT_DSL_VERSION}"
-        fi
-        echo "::group::Installing harmont Python DSL"
-        pip install "$pip_spec"
-        echo "::endgroup::"
+        echo "/tmp/hm/bin" >> "$GITHUB_PATH"
+        export PATH="/tmp/hm/bin:$PATH"
+        echo "hm-version=$(hm --version)" >> "$GITHUB_OUTPUT"
