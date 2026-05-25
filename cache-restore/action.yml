@@ -1,0 +1,105 @@
+name: Restore Harmont Cache
+description: >
+  Pull cached Docker images from a container registry.
+  Images are stored per-step with content-addressed tags,
+  giving native layer deduplication and no size limits.
+
+inputs:
+  registry:
+    description: Container registry to pull from
+    required: false
+    default: ghcr.io
+  registry-prefix:
+    description: >
+      Registry path prefix for cached images. Defaults to
+      ghcr.io/<owner>/<repo>/harmont-cache.
+    required: false
+    default: ''
+  working-directory:
+    description: Directory where .harmont-cache/ lives (usually repo root)
+    required: false
+    default: .
+  token:
+    description: >
+      Token for registry authentication (needs packages:read).
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  restored:
+    description: Whether any images were restored from registry
+    value: ${{ steps.pull.outputs.restored }}
+
+runs:
+  using: composite
+  steps:
+    - name: Login to container registry
+      shell: bash
+      env:
+        INPUT_REGISTRY: ${{ inputs.registry }}
+        INPUT_TOKEN: ${{ inputs.token }}
+      run: |
+        echo "$INPUT_TOKEN" | docker login "$INPUT_REGISTRY" -u __token__ --password-stdin
+
+    - name: Pull cached images from registry
+      id: pull
+      shell: bash
+      env:
+        INPUT_REGISTRY_PREFIX: ${{ inputs.registry-prefix }}
+        INPUT_REGISTRY: ${{ inputs.registry }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        prefix="${INPUT_REGISTRY_PREFIX:-${INPUT_REGISTRY}/${GITHUB_REPOSITORY}/harmont-cache}"
+        restored=0
+
+        echo "::group::Pulling manifest from registry"
+        manifest_image="${prefix}/manifest:latest"
+        mkdir -p .harmont-cache
+
+        # Pull the manifest image — a single-layer image containing manifest.json
+        if ! docker pull "$manifest_image" 2>/dev/null; then
+          echo "No manifest found in registry, cold start"
+          echo "restored=false" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
+          exit 0
+        fi
+
+        # Extract manifest.json from the image
+        container_id=$(docker create "$manifest_image" 2>/dev/null)
+        docker cp "$container_id:/manifest.json" .harmont-cache/manifest.json 2>/dev/null
+        docker rm "$container_id" > /dev/null 2>&1
+        echo "::endgroup::"
+
+        if [ ! -f .harmont-cache/manifest.json ]; then
+          echo "Failed to extract manifest, cold start"
+          echo "restored=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        echo "::group::Pulling cached images"
+        while IFS='|' read -r _ tag; do
+          # harmont-local/step:hash -> prefix/step:hash
+          registry_tag="${prefix}/${tag#harmont-local/}"
+
+          if docker pull "$registry_tag" 2>/dev/null; then
+            docker tag "$registry_tag" "$tag"
+            restored=$((restored + 1))
+            echo "  ✓ $tag"
+          else
+            echo "  ✗ $tag (not in registry)"
+          fi
+        done < <(python3 -c "
+        import json
+        m = json.load(open('.harmont-cache/manifest.json'))
+        for k, v in m['images'].items():
+            print(f'{k}|{v}')
+        ")
+        echo "::endgroup::"
+
+        echo "Restored $restored images from registry"
+        if [ "$restored" -gt 0 ]; then
+          echo "restored=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "restored=false" >> "$GITHUB_OUTPUT"
+        fi

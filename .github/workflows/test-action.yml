@@ -1,0 +1,85 @@
+name: Test Action
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  all-in-one:
+    name: All-in-one action
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run harmont via all-in-one action
+        uses: ./
+        with:
+          pipeline: hello
+          working-directory: tests/fixtures
+          cache: 'true'
+
+  granular:
+    name: Granular sub-actions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup hm
+        uses: ./setup
+        with:
+          version: latest
+
+      - name: Restore cache
+        uses: ./cache-restore
+
+      - name: Run pipeline manually
+        working-directory: tests/fixtures
+        env:
+          HM_NONINTERACTIVE: '1'
+        run: hm run hello
+
+      - name: Save cache
+        if: always()
+        uses: ./cache-save
+
+  setup-only:
+    name: Setup only (verify install)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup hm
+        id: setup
+        uses: ./setup
+        with:
+          version: latest
+
+      - name: Verify hm is on PATH
+        run: |
+          hm --version
+          echo "Installed version: ${{ steps.setup.outputs.hm-version }}"
+
+  setup-cached:
+    name: Setup with cache hit (second run)
+    runs-on: ubuntu-latest
+    needs: setup-only
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup hm (should hit cache)
+        id: setup
+        uses: ./setup
+        with:
+          version: latest
+
+      - name: Verify cache was used
+        run: |
+          echo "Cache hit: ${{ steps.setup.outputs.cache-hit }}"
+          hm --version

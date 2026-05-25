@@ -1,0 +1,61 @@
+name: Setup Harmont
+description: Install the hm CLI with binary caching
+
+inputs:
+  version:
+    description: >
+      hm version to install. Use 'latest' for the most recent release,
+      or pin to a specific version (e.g. '0.5.0' or 'v0.5.0').
+    required: false
+    default: latest
+  token:
+    description: >
+      GitHub token for downloading release assets and API rate limits.
+      Defaults to the automatic GITHUB_TOKEN.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  hm-version:
+    description: Installed hm version string
+    value: ${{ steps.install.outputs.hm-version }}
+  cache-hit:
+    description: Whether the hm binary was restored from cache
+    value: ${{ steps.cache.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve version
+      id: version
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        GITHUB_TOKEN: ${{ inputs.token }}
+      run: |
+        tag=$("${{ github.action_path }}/../scripts/resolve-version.sh" "$INPUT_VERSION")
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+    - name: Cache hm binary
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: /tmp/hm/bin
+        key: hm-${{ steps.version.outputs.tag }}-${{ runner.os }}-${{ runner.arch }}
+
+    - name: Install hm
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        INPUT_TAG: ${{ steps.version.outputs.tag }}
+        HM_INSTALL_DIR: /tmp/hm/bin
+      run: |
+        "${{ github.action_path }}/../scripts/install-hm.sh" "$INPUT_TAG" "$HM_INSTALL_DIR"
+
+    - name: Add hm to PATH and verify
+      id: install
+      shell: bash
+      run: |
+        echo "/tmp/hm/bin" >> "$GITHUB_PATH"
+        export PATH="/tmp/hm/bin:$PATH"
+        echo "hm-version=$(hm --version)" >> "$GITHUB_OUTPUT"

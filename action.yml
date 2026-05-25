@@ -1,0 +1,122 @@
+name: Harmont
+description: >
+  Run a harmont pipeline in GitHub Actions with automatic Docker
+  image caching. One step to go from zero to running pipelines.
+
+branding:
+  icon: terminal
+  color: purple
+
+inputs:
+  pipeline:
+    description: >
+      Pipeline slug to run (e.g. 'ci'). If omitted and the repo has
+      only one pipeline, harmont auto-selects it.
+    required: false
+    default: ''
+  version:
+    description: hm CLI version ('latest' or semver like '0.5.0')
+    required: false
+    default: latest
+  working-directory:
+    description: >
+      Path to the repo root where .harmont/ pipelines live.
+    required: false
+    default: .
+  parallelism:
+    description: >
+      Max concurrent pipeline chains. Defaults to host CPU count.
+    required: false
+    default: ''
+  cache:
+    description: Enable Docker image caching between runs
+    required: false
+    default: 'true'
+  cache-registry:
+    description: Container registry for image caching
+    required: false
+    default: ghcr.io
+  cache-registry-prefix:
+    description: >
+      Registry path prefix for cached images. Defaults to
+      ghcr.io/<owner>/<repo>/harmont-cache.
+    required: false
+    default: ''
+  cache-cleanup:
+    description: Delete stale images from registry after save
+    required: false
+    default: 'true'
+  cache-cleanup-keep:
+    description: Number of old image versions to keep per step
+    required: false
+    default: '2'
+  extra-args:
+    description: Additional arguments passed to 'hm run'
+    required: false
+    default: ''
+  token:
+    description: >
+      GitHub token (needs packages:write for cache, packages:delete for cleanup)
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  hm-version:
+    description: Installed hm CLI version
+    value: ${{ steps.setup.outputs.hm-version }}
+
+runs:
+  using: composite
+  steps:
+    # --- Setup ---
+    - name: Setup Harmont
+      id: setup
+      uses: ./setup
+      with:
+        version: ${{ inputs.version }}
+        token: ${{ inputs.token }}
+
+    # --- Cache Restore ---
+    - name: Restore Docker cache
+      if: inputs.cache == 'true'
+      uses: ./cache-restore
+      with:
+        registry: ${{ inputs.cache-registry }}
+        registry-prefix: ${{ inputs.cache-registry-prefix }}
+        working-directory: ${{ inputs.working-directory }}
+        token: ${{ inputs.token }}
+
+    # --- Run Pipeline ---
+    - name: Run harmont pipeline
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        HM_NONINTERACTIVE: '1'
+        INPUT_PIPELINE: ${{ inputs.pipeline }}
+        INPUT_PARALLELISM: ${{ inputs.parallelism }}
+        INPUT_EXTRA_ARGS: ${{ inputs.extra-args }}
+      run: |
+        args=()
+        if [[ -n "$INPUT_PIPELINE" ]]; then
+          args+=("$INPUT_PIPELINE")
+        fi
+        if [[ -n "$INPUT_PARALLELISM" ]]; then
+          args+=("--parallelism" "$INPUT_PARALLELISM")
+        fi
+        if [[ -n "$INPUT_EXTRA_ARGS" ]]; then
+          read -ra extra <<< "$INPUT_EXTRA_ARGS"
+          args+=("${extra[@]}")
+        fi
+        hm run "${args[@]}"
+
+    # --- Cache Save ---
+    - name: Save Docker cache
+      if: always() && inputs.cache == 'true'
+      uses: ./cache-save
+      with:
+        registry: ${{ inputs.cache-registry }}
+        registry-prefix: ${{ inputs.cache-registry-prefix }}
+        working-directory: ${{ inputs.working-directory }}
+        cleanup: ${{ inputs.cache-cleanup }}
+        cleanup-keep: ${{ inputs.cache-cleanup-keep }}
+        token: ${{ inputs.token }}

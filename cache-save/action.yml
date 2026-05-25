@@ -1,0 +1,201 @@
+name: Save Harmont Cache
+description: >
+  Push Docker images to a container registry after a harmont pipeline run.
+  Automatically cleans up stale images no longer in the current manifest.
+  Use with 'if: always()' to save cache even when the pipeline fails.
+
+inputs:
+  registry:
+    description: Container registry to push to
+    required: false
+    default: ghcr.io
+  registry-prefix:
+    description: >
+      Registry path prefix for cached images. Defaults to
+      ghcr.io/<owner>/<repo>/harmont-cache.
+    required: false
+    default: ''
+  working-directory:
+    description: Directory where .harmont-cache/ lives (usually repo root)
+    required: false
+    default: .
+  cleanup:
+    description: >
+      Delete stale images from registry that are no longer in the manifest.
+      Requires packages:delete permission on the token.
+    required: false
+    default: 'true'
+  cleanup-keep:
+    description: >
+      Number of previous image versions to keep per step (in addition
+      to the current one). Set to 0 for aggressive cleanup.
+    required: false
+    default: '2'
+  token:
+    description: >
+      Token for registry auth (needs packages:write, packages:delete for cleanup).
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Login to container registry
+      shell: bash
+      env:
+        INPUT_REGISTRY: ${{ inputs.registry }}
+        INPUT_TOKEN: ${{ inputs.token }}
+      run: |
+        echo "$INPUT_TOKEN" | docker login "$INPUT_REGISTRY" -u __token__ --password-stdin
+
+    - name: Export manifest and push images
+      id: push
+      shell: bash
+      env:
+        INPUT_REGISTRY_PREFIX: ${{ inputs.registry-prefix }}
+        INPUT_REGISTRY: ${{ inputs.registry }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        prefix="${INPUT_REGISTRY_PREFIX:-${INPUT_REGISTRY}/${GITHUB_REPOSITORY}/harmont-cache}"
+
+        echo "::group::Exporting image manifest"
+        hm cache save .harmont-cache/ > /dev/null
+        echo "::endgroup::"
+
+        if [ ! -f .harmont-cache/manifest.json ]; then
+          echo "No manifest produced, nothing to push"
+          exit 0
+        fi
+
+        echo "::group::Pushing images to registry"
+        pushed=0
+        while IFS='|' read -r _ tag; do
+          registry_tag="${prefix}/${tag#harmont-local/}"
+
+          docker tag "$tag" "$registry_tag"
+          if docker push "$registry_tag"; then
+            pushed=$((pushed + 1))
+            echo "  ✓ $registry_tag"
+          else
+            echo "  ✗ $registry_tag (push failed)"
+          fi
+        done < <(python3 -c "
+        import json
+        m = json.load(open('.harmont-cache/manifest.json'))
+        for k, v in m['images'].items():
+            print(f'{k}|{v}')
+        ")
+        echo "::endgroup::"
+        echo "Pushed $pushed images"
+
+        # Push manifest as a lightweight image so restore can bootstrap
+        echo "::group::Pushing manifest image"
+        cat > /tmp/Dockerfile.manifest <<DOCKERFILE
+        FROM scratch
+        COPY manifest.json /manifest.json
+        DOCKERFILE
+        docker build -f /tmp/Dockerfile.manifest -t "${prefix}/manifest:latest" .harmont-cache/
+        docker push "${prefix}/manifest:latest"
+        echo "::endgroup::"
+
+    - name: Cleanup stale images
+      if: inputs.cleanup == 'true'
+      shell: bash
+      env:
+        INPUT_REGISTRY_PREFIX: ${{ inputs.registry-prefix }}
+        INPUT_REGISTRY: ${{ inputs.registry }}
+        INPUT_TOKEN: ${{ inputs.token }}
+        INPUT_KEEP: ${{ inputs.cleanup-keep }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        prefix="${INPUT_REGISTRY_PREFIX:-${INPUT_REGISTRY}/${GITHUB_REPOSITORY}/harmont-cache}"
+        keep="${INPUT_KEEP:-2}"
+        owner="${GITHUB_REPOSITORY%%/*}"
+        repo="${GITHUB_REPOSITORY##*/}"
+
+        if [ ! -f .harmont-cache/manifest.json ]; then
+          exit 0
+        fi
+
+        echo "::group::Cleaning up stale cache images (keeping $keep old versions per step)"
+
+        # Get list of current step names from manifest
+        step_names=$(python3 -c "
+        import json
+        m = json.load(open('.harmont-cache/manifest.json'))
+        seen = set()
+        for tag in m['images'].values():
+            # harmont-local/step:hash -> step
+            name = tag.split('/')[-1].split(':')[0]
+            if name not in seen:
+                seen.add(name)
+                print(name)
+        ")
+
+        for step in $step_names; do
+          package_name="${repo}/harmont-cache/${step}"
+
+          # List all versions for this package via GitHub API
+          versions=$(curl -fsSL \
+            -H "Authorization: Bearer ${INPUT_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/orgs/${owner}/packages/container/${package_name}/versions?per_page=100" 2>/dev/null) || {
+            # Try user endpoint if org endpoint fails
+            versions=$(curl -fsSL \
+              -H "Authorization: Bearer ${INPUT_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/user/packages/container/${package_name}/versions?per_page=100" 2>/dev/null) || continue
+          }
+
+          # Get current tag for this step from manifest
+          current_tag=$(python3 -c "
+        import json
+        m = json.load(open('.harmont-cache/manifest.json'))
+        for tag in m['images'].values():
+            parts = tag.split('/')[-1].split(':')
+            if parts[0] == '${step}':
+                print(parts[1])
+                break
+        " 2>/dev/null) || continue
+
+          # Parse versions, skip current + keep N most recent, delete the rest
+          to_delete=$(python3 -c "
+        import json, sys
+        versions = json.loads('''${versions}''')
+        current_tag = '${current_tag}'
+        keep = int('${keep}')
+
+        # Sort by created_at descending
+        versions.sort(key=lambda v: v.get('created_at', ''), reverse=True)
+
+        # Find versions to delete (skip current, keep N recent, delete rest)
+        kept = 0
+        for v in versions:
+            tags = v.get('metadata', {}).get('container', {}).get('tags', [])
+            if current_tag in tags:
+                continue
+            if kept < keep:
+                kept += 1
+                continue
+            print(v['id'])
+        " 2>/dev/null) || continue
+
+          for version_id in $to_delete; do
+            # Try org endpoint first, then user endpoint
+            if curl -fsSL -X DELETE \
+              -H "Authorization: Bearer ${INPUT_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/orgs/${owner}/packages/container/${package_name}/versions/${version_id}" 2>/dev/null; then
+              echo "  Deleted version $version_id of $step"
+            elif curl -fsSL -X DELETE \
+              -H "Authorization: Bearer ${INPUT_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/user/packages/container/${package_name}/versions/${version_id}" 2>/dev/null; then
+              echo "  Deleted version $version_id of $step"
+            fi
+          done
+        done
+
+        echo "::endgroup::"
