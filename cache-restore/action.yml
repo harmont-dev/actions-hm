@@ -66,9 +66,14 @@ runs:
         fi
 
         # Extract manifest.json from the image
-        container_id=$(docker create "$manifest_image" 2>/dev/null)
-        docker cp "$container_id:/manifest.json" .harmont-cache/manifest.json 2>/dev/null
-        docker rm "$container_id" > /dev/null 2>&1
+        container_id=$(docker create "$manifest_image" _ 2>/dev/null) || {
+          echo "Failed to create container from manifest image, cold start"
+          echo "restored=false" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
+          exit 0
+        }
+        docker cp "$container_id:/manifest.json" .harmont-cache/manifest.json 2>/dev/null || true
+        docker rm "$container_id" > /dev/null 2>&1 || true
         echo "::endgroup::"
 
         if [ ! -f .harmont-cache/manifest.json ]; then
