@@ -95,6 +95,29 @@ jobs:
         if: always()
 ```
 
+### Custom binary (dogfood pattern)
+
+When testing a locally-built `hm` binary (e.g., the harmont-cli repo's own CI):
+
+```yaml
+- name: Build hm from source
+  run: cargo build -p harmont-cli
+
+- uses: harmont-dev/actions-hm/cache-restore@v1
+
+- run: ./target/debug/hm run ci
+  env:
+    HM_NONINTERACTIVE: '1'
+
+- uses: harmont-dev/actions-hm/cache-save@v1
+  if: always()
+  with:
+    hm-path: ./target/debug/hm
+```
+
+The `hm-path` input tells cache-save where to find the binary. Cache-restore
+doesn't need it — it uses Docker directly.
+
 ### Pin to specific version
 
 ```yaml
@@ -116,6 +139,7 @@ jobs:
 | `cache-registry-prefix` | *(auto)* | Registry path prefix. Default: `ghcr.io/<owner>/<repo>/harmont-cache` |
 | `cache-cleanup` | `true` | Delete stale images from registry after save |
 | `cache-cleanup-keep` | `2` | Number of old image versions to keep per step |
+| `hm-path` | | Path to a locally-built `hm` binary (skips install; used for dogfooding) |
 | `extra-args` | | Additional arguments passed to `hm run` |
 | `token` | `github.token` | GitHub token (needs `packages:write`, `packages:delete` for cleanup) |
 
