@@ -83,3 +83,53 @@ jobs:
         run: |
           echo "Cache hit: ${{ steps.setup.outputs.cache-hit }}"
           hm --version
+
+  custom-binary:
+    name: Custom hm-path (dogfood pattern)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create mock hm binary
+        run: |
+          mkdir -p /tmp/mock-hm
+          cat > /tmp/mock-hm/hm << 'SCRIPT'
+          #!/bin/bash
+          case "$1" in
+            --version) echo "mock-0.0.1" ;;
+            cache)
+              case "$2" in
+                save)
+                  mkdir -p "$3"
+                  echo '{"images":{}}' > "$3/manifest.json"
+                  echo "abc123"
+                  ;;
+                restore) echo "restored" ;;
+              esac
+              ;;
+            run) echo "ran pipeline: $2" ;;
+          esac
+          SCRIPT
+          chmod +x /tmp/mock-hm/hm
+
+      - name: Cache restore (no manifest yet, cold start)
+        uses: ./cache-restore
+        with:
+          working-directory: tests/fixtures
+
+      - name: Run with custom binary
+        working-directory: tests/fixtures
+        env:
+          HM_NONINTERACTIVE: '1'
+        run: /tmp/mock-hm/hm run hello
+
+      - name: Cache save with custom binary
+        if: always()
+        uses: ./cache-save
+        with:
+          working-directory: tests/fixtures
+          hm-path: /tmp/mock-hm/hm
