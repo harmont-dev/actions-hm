@@ -1,28 +1,16 @@
 # actions-hm
 
-[![CI](https://img.shields.io/github/actions/workflow/status/harmont-dev/actions-hm/ci.yml?branch=main&logo=github&label=CI)](https://github.com/harmont-dev/actions-hm/actions)
-[![GitHub release](https://img.shields.io/github/v/release/harmont-dev/actions-hm?logo=github)](https://github.com/harmont-dev/actions-hm/releases)
-[![Marketplace](https://img.shields.io/badge/marketplace-harmont-purple?logo=github)](https://github.com/marketplace/actions/harmont)
+> [!WARNING]
+>
+> This repo is currently considered experimental.
 
-Run [harmont](https://harmont.dev) pipelines in GitHub Actions. One step. Automatic Docker image caching via your container registry.
+Run [harmont](https://harmont.dev) pipelines in GitHub Actions.
 
 ```yaml
-- uses: harmont-dev/actions-hm@v1
+- uses: harmont-dev/actions-hm@main
   with:
     pipeline: ci
 ```
-
-That's it. This installs `hm`, pulls cached Docker images from GHCR, runs your pipeline, and pushes updated images back — with automatic cleanup of stale cache entries.
-
-## Why
-
-You already define your CI with harmont. This action lets you run it on GitHub Actions without boilerplate:
-
-- **Zero config caching** — Docker images cached in GHCR with native layer deduplication
-- **One step** — no separate setup, login, cache-restore, cache-save dance
-- **Fast repeat runs** — `hm` binary cached between runs, images pulled only when changed
-- **Auto cleanup** — stale registry images pruned automatically (configurable retention)
-- **Granular control** — use sub-actions individually when you need custom steps between them
 
 ## Usage
 
@@ -55,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: harmont-dev/actions-hm@v1
+      - uses: harmont-dev/actions-hm@main
         with:
           pipeline: lint
 
@@ -63,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: harmont-dev/actions-hm@v1
+      - uses: harmont-dev/actions-hm@main
         with:
           pipeline: test
           parallelism: 4
@@ -95,14 +83,6 @@ jobs:
         if: always()
 ```
 
-### Pin to specific version
-
-```yaml
-- uses: harmont-dev/actions-hm@v1
-  with:
-    version: 0.5.0
-```
-
 ## Inputs
 
 | Input | Default | Description |
@@ -116,6 +96,7 @@ jobs:
 | `cache-registry-prefix` | *(auto)* | Registry path prefix. Default: `ghcr.io/<owner>/<repo>/harmont-cache` |
 | `cache-cleanup` | `true` | Delete stale images from registry after save |
 | `cache-cleanup-keep` | `2` | Number of old image versions to keep per step |
+| `hm-path` | | Path to a locally-built `hm` binary (skips install; used for dogfooding) |
 | `extra-args` | | Additional arguments passed to `hm run` |
 | `token` | `github.token` | GitHub token (needs `packages:write`, `packages:delete` for cleanup) |
 
@@ -212,7 +193,7 @@ steps:
 ```yaml
 steps:
   - uses: actions/checkout@v4
-  - uses: harmont-dev/actions-hm@v1
+  - uses: harmont-dev/actions-hm@main
     with:
       pipeline: ci
 ```
@@ -234,7 +215,7 @@ macOS runners have Docker available via colima/lima. Windows runners are not cur
 Yes. Set `cache-registry` to your registry hostname and provide a token with push/pull access:
 
 ```yaml
-- uses: harmont-dev/actions-hm@v1
+- uses: harmont-dev/actions-hm@main
   with:
     pipeline: ci
     cache-registry: registry.example.com
@@ -244,7 +225,7 @@ Yes. Set `cache-registry` to your registry hostname and provide a token with pus
 ### How do I disable caching entirely?
 
 ```yaml
-- uses: harmont-dev/actions-hm@v1
+- uses: harmont-dev/actions-hm@main
   with:
     pipeline: ci
     cache: 'false'

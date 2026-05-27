@@ -54,6 +54,12 @@ inputs:
     description: Additional arguments passed to 'hm run'
     required: false
     default: ''
+  hm-path:
+    description: >
+      Path to the hm binary. Use when testing a locally-built binary
+      instead of an installed release. Overrides setup step.
+    required: false
+    default: ''
   token:
     description: >
       GitHub token (needs packages:write for cache, packages:delete for cleanup)
@@ -70,6 +76,7 @@ runs:
   steps:
     # --- Setup ---
     - name: Setup Harmont
+      if: inputs.hm-path == ''
       id: setup
       uses: ./setup
       with:
@@ -92,6 +99,7 @@ runs:
       working-directory: ${{ inputs.working-directory }}
       env:
         HM_NONINTERACTIVE: '1'
+        INPUT_HM_PATH: ${{ inputs.hm-path || 'hm' }}
         INPUT_PIPELINE: ${{ inputs.pipeline }}
         INPUT_PARALLELISM: ${{ inputs.parallelism }}
         INPUT_EXTRA_ARGS: ${{ inputs.extra-args }}
@@ -107,7 +115,7 @@ runs:
           read -ra extra <<< "$INPUT_EXTRA_ARGS"
           args+=("${extra[@]}")
         fi
-        hm run "${args[@]}"
+        "$INPUT_HM_PATH" run "${args[@]}"
 
     # --- Cache Save ---
     - name: Save Docker cache
@@ -119,4 +127,5 @@ runs:
         working-directory: ${{ inputs.working-directory }}
         cleanup: ${{ inputs.cache-cleanup }}
         cleanup-keep: ${{ inputs.cache-cleanup-keep }}
+        hm-path: ${{ inputs.hm-path || 'hm' }}
         token: ${{ inputs.token }}
