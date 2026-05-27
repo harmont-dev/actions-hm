@@ -69,29 +69,119 @@ inputs:
 outputs:
   hm-version:
     description: Installed hm CLI version
-    value: ${{ steps.setup.outputs.hm-version }}
+    value: ${{ steps.install.outputs.hm-version }}
 
 runs:
   using: composite
   steps:
-    # --- Setup ---
-    - name: Setup Harmont
+    # --- Setup (inlined from setup/) ---
+    - name: Resolve hm version
       if: inputs.hm-path == ''
-      id: setup
-      uses: harmont-dev/actions-hm/setup@main
-      with:
-        version: ${{ inputs.version }}
-        token: ${{ inputs.token }}
+      id: version
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        GITHUB_TOKEN: ${{ inputs.token }}
+      run: |
+        tag=$("${{ github.action_path }}/scripts/resolve-version.sh" "$INPUT_VERSION")
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-    # --- Cache Restore ---
-    - name: Restore Docker cache
-      if: inputs.cache == 'true'
-      uses: harmont-dev/actions-hm/cache-restore@main
+    - name: Cache hm binary
+      if: inputs.hm-path == ''
+      id: cache
+      uses: actions/cache@v4
       with:
-        registry: ${{ inputs.cache-registry }}
-        registry-prefix: ${{ inputs.cache-registry-prefix }}
-        working-directory: ${{ inputs.working-directory }}
-        token: ${{ inputs.token }}
+        path: /tmp/hm/bin
+        key: hm-${{ steps.version.outputs.tag }}-${{ runner.os }}-${{ runner.arch }}
+
+    - name: Install hm
+      if: inputs.hm-path == '' && steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        INPUT_TAG: ${{ steps.version.outputs.tag }}
+        HM_INSTALL_DIR: /tmp/hm/bin
+      run: |
+        "${{ github.action_path }}/scripts/install-hm.sh" "$INPUT_TAG" "$HM_INSTALL_DIR"
+
+    - name: Add hm to PATH and verify
+      if: inputs.hm-path == ''
+      id: install
+      shell: bash
+      run: |
+        echo "/tmp/hm/bin" >> "$GITHUB_PATH"
+        export PATH="/tmp/hm/bin:$PATH"
+        echo "hm-version=$(hm --version)" >> "$GITHUB_OUTPUT"
+
+    # --- Cache Restore (inlined from cache-restore/) ---
+    - name: Login to cache registry
+      if: inputs.cache == 'true'
+      shell: bash
+      env:
+        INPUT_REGISTRY: ${{ inputs.cache-registry }}
+        INPUT_TOKEN: ${{ inputs.token }}
+      run: |
+        echo "$INPUT_TOKEN" | docker login "$INPUT_REGISTRY" -u __token__ --password-stdin
+
+    - name: Pull cached Docker images
+      if: inputs.cache == 'true'
+      id: cache-restore
+      shell: bash
+      env:
+        INPUT_REGISTRY_PREFIX: ${{ inputs.cache-registry-prefix }}
+        INPUT_REGISTRY: ${{ inputs.cache-registry }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        prefix="${INPUT_REGISTRY_PREFIX:-${INPUT_REGISTRY}/${GITHUB_REPOSITORY}/harmont-cache}"
+        restored=0
+
+        echo "::group::Pulling manifest from registry"
+        manifest_image="${prefix}/manifest:latest"
+        mkdir -p .harmont-cache
+
+        if ! docker pull "$manifest_image" 2>/dev/null; then
+          echo "No manifest found in registry, cold start"
+          echo "restored=false" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
+          exit 0
+        fi
+
+        container_id=$(docker create "$manifest_image" 2>/dev/null)
+        docker cp "$container_id:/manifest.json" .harmont-cache/manifest.json 2>/dev/null
+        docker rm "$container_id" > /dev/null 2>&1
+        echo "::endgroup::"
+
+        if [ ! -f .harmont-cache/manifest.json ]; then
+          echo "Failed to extract manifest, cold start"
+          echo "restored=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        echo "::group::Pulling cached images"
+        while IFS='|' read -r _ tag; do
+          registry_tag="${prefix}/${tag#harmont-local/}"
+
+          if docker pull "$registry_tag" 2>/dev/null; then
+            docker tag "$registry_tag" "$tag"
+            restored=$((restored + 1))
+            echo "  ✓ $tag"
+          else
+            echo "  ✗ $tag (not in registry)"
+          fi
+        done < <(python3 -c "
+        import json
+        m = json.load(open('.harmont-cache/manifest.json'))
+        for k, v in m['images'].items():
+            print(f'{k}|{v}')
+        ")
+        echo "::endgroup::"
+
+        echo "Restored $restored images from registry"
+        if [ "$restored" -gt 0 ]; then
+          echo "restored=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "restored=false" >> "$GITHUB_OUTPUT"
+        fi
 
     # --- Run Pipeline ---
     - name: Run harmont pipeline
@@ -117,15 +207,156 @@ runs:
         fi
         "$INPUT_HM_PATH" run "${args[@]}"
 
-    # --- Cache Save ---
-    - name: Save Docker cache
+    # --- Cache Save (inlined from cache-save/) ---
+    - name: Login to cache registry (save)
       if: always() && inputs.cache == 'true'
-      uses: harmont-dev/actions-hm/cache-save@main
-      with:
-        registry: ${{ inputs.cache-registry }}
-        registry-prefix: ${{ inputs.cache-registry-prefix }}
-        working-directory: ${{ inputs.working-directory }}
-        cleanup: ${{ inputs.cache-cleanup }}
-        cleanup-keep: ${{ inputs.cache-cleanup-keep }}
-        hm-path: ${{ inputs.hm-path || 'hm' }}
-        token: ${{ inputs.token }}
+      shell: bash
+      env:
+        INPUT_REGISTRY: ${{ inputs.cache-registry }}
+        INPUT_TOKEN: ${{ inputs.token }}
+      run: |
+        echo "$INPUT_TOKEN" | docker login "$INPUT_REGISTRY" -u __token__ --password-stdin
+
+    - name: Export manifest and push images
+      if: always() && inputs.cache == 'true'
+      id: cache-push
+      shell: bash
+      env:
+        INPUT_REGISTRY_PREFIX: ${{ inputs.cache-registry-prefix }}
+        INPUT_REGISTRY: ${{ inputs.cache-registry }}
+        INPUT_HM_PATH: ${{ inputs.hm-path || 'hm' }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        prefix="${INPUT_REGISTRY_PREFIX:-${INPUT_REGISTRY}/${GITHUB_REPOSITORY}/harmont-cache}"
+
+        echo "::group::Exporting image manifest"
+        "$INPUT_HM_PATH" cache save .harmont-cache/ > /dev/null
+        echo "::endgroup::"
+
+        if [ ! -f .harmont-cache/manifest.json ]; then
+          echo "No manifest produced, nothing to push"
+          exit 0
+        fi
+
+        echo "::group::Pushing images to registry"
+        pushed=0
+        while IFS='|' read -r _ tag; do
+          registry_tag="${prefix}/${tag#harmont-local/}"
+
+          docker tag "$tag" "$registry_tag"
+          if docker push "$registry_tag"; then
+            pushed=$((pushed + 1))
+            echo "  ✓ $registry_tag"
+          else
+            echo "  ✗ $registry_tag (push failed)"
+          fi
+        done < <(python3 -c "
+        import json
+        m = json.load(open('.harmont-cache/manifest.json'))
+        for k, v in m['images'].items():
+            print(f'{k}|{v}')
+        ")
+        echo "::endgroup::"
+        echo "Pushed $pushed images"
+
+        echo "::group::Pushing manifest image"
+        cat > /tmp/Dockerfile.manifest <<DOCKERFILE
+        FROM scratch
+        COPY manifest.json /manifest.json
+        DOCKERFILE
+        docker build -f /tmp/Dockerfile.manifest -t "${prefix}/manifest:latest" .harmont-cache/
+        docker push "${prefix}/manifest:latest"
+        echo "::endgroup::"
+
+    - name: Cleanup stale images
+      if: always() && inputs.cache == 'true' && inputs.cache-cleanup == 'true'
+      shell: bash
+      env:
+        INPUT_REGISTRY_PREFIX: ${{ inputs.cache-registry-prefix }}
+        INPUT_REGISTRY: ${{ inputs.cache-registry }}
+        INPUT_TOKEN: ${{ inputs.token }}
+        INPUT_KEEP: ${{ inputs.cache-cleanup-keep }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        prefix="${INPUT_REGISTRY_PREFIX:-${INPUT_REGISTRY}/${GITHUB_REPOSITORY}/harmont-cache}"
+        keep="${INPUT_KEEP:-2}"
+        owner="${GITHUB_REPOSITORY%%/*}"
+        repo="${GITHUB_REPOSITORY##*/}"
+
+        if [ ! -f .harmont-cache/manifest.json ]; then
+          exit 0
+        fi
+
+        echo "::group::Cleaning up stale cache images (keeping $keep old versions per step)"
+
+        step_names=$(python3 -c "
+        import json
+        m = json.load(open('.harmont-cache/manifest.json'))
+        seen = set()
+        for tag in m['images'].values():
+            name = tag.split('/')[-1].split(':')[0]
+            if name not in seen:
+                seen.add(name)
+                print(name)
+        ")
+
+        for step in $step_names; do
+          package_name="${repo}/harmont-cache/${step}"
+
+          versions=$(curl -fsSL \
+            -H "Authorization: Bearer ${INPUT_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/orgs/${owner}/packages/container/${package_name}/versions?per_page=100" 2>/dev/null) || {
+            versions=$(curl -fsSL \
+              -H "Authorization: Bearer ${INPUT_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/user/packages/container/${package_name}/versions?per_page=100" 2>/dev/null) || continue
+          }
+
+          current_tag=$(python3 -c "
+        import json
+        m = json.load(open('.harmont-cache/manifest.json'))
+        for tag in m['images'].values():
+            parts = tag.split('/')[-1].split(':')
+            if parts[0] == '${step}':
+                print(parts[1])
+                break
+        " 2>/dev/null) || continue
+
+          to_delete=$(python3 -c "
+        import json, sys
+        versions = json.loads('''${versions}''')
+        current_tag = '${current_tag}'
+        keep = int('${keep}')
+
+        versions.sort(key=lambda v: v.get('created_at', ''), reverse=True)
+
+        kept = 0
+        for v in versions:
+            tags = v.get('metadata', {}).get('container', {}).get('tags', [])
+            if current_tag in tags:
+                continue
+            if kept < keep:
+                kept += 1
+                continue
+            print(v['id'])
+        " 2>/dev/null) || continue
+
+          for version_id in $to_delete; do
+            if curl -fsSL -X DELETE \
+              -H "Authorization: Bearer ${INPUT_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/orgs/${owner}/packages/container/${package_name}/versions/${version_id}" 2>/dev/null; then
+              echo "  Deleted version $version_id of $step"
+            elif curl -fsSL -X DELETE \
+              -H "Authorization: Bearer ${INPUT_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/user/packages/container/${package_name}/versions/${version_id}" 2>/dev/null; then
+              echo "  Deleted version $version_id of $step"
+            fi
+          done
+        done
+
+        echo "::endgroup::"
