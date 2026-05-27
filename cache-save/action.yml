@@ -36,6 +36,12 @@ inputs:
       Token for registry auth (needs packages:write, packages:delete for cleanup).
     required: false
     default: ${{ github.token }}
+  hm-path:
+    description: >
+      Path to the hm binary. Defaults to 'hm' (assumes it's on PATH).
+      Use './target/debug/hm' or similar when testing a locally-built binary.
+    required: false
+    default: hm
 
 runs:
   using: composite
@@ -54,13 +60,14 @@ runs:
       env:
         INPUT_REGISTRY_PREFIX: ${{ inputs.registry-prefix }}
         INPUT_REGISTRY: ${{ inputs.registry }}
+        INPUT_HM_PATH: ${{ inputs.hm-path }}
         GITHUB_REPOSITORY: ${{ github.repository }}
       working-directory: ${{ inputs.working-directory }}
       run: |
         prefix="${INPUT_REGISTRY_PREFIX:-${INPUT_REGISTRY}/${GITHUB_REPOSITORY}/harmont-cache}"
 
         echo "::group::Exporting image manifest"
-        hm cache save .harmont-cache/ > /dev/null
+        "$INPUT_HM_PATH" cache save .harmont-cache/ > /dev/null
         echo "::endgroup::"
 
         if [ ! -f .harmont-cache/manifest.json ]; then
