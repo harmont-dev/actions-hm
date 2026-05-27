@@ -3,7 +3,6 @@ description: >
   Push Docker images to a container registry after a harmont pipeline run.
   Automatically cleans up stale images no longer in the current manifest.
   Use with 'if: always()' to save cache even when the pipeline fails.
-
 inputs:
   registry:
     description: Container registry to push to
@@ -42,7 +41,6 @@ inputs:
       Use './target/debug/hm' or similar when testing a locally-built binary.
     required: false
     default: hm
-
 runs:
   using: composite
   steps:
