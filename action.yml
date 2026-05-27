@@ -78,7 +78,7 @@ runs:
     - name: Setup Harmont
       if: inputs.hm-path == ''
       id: setup
-      uses: ./setup
+      uses: harmont-dev/actions-hm/setup@main
       with:
         version: ${{ inputs.version }}
         token: ${{ inputs.token }}
@@ -86,7 +86,7 @@ runs:
     # --- Cache Restore ---
     - name: Restore Docker cache
       if: inputs.cache == 'true'
-      uses: ./cache-restore
+      uses: harmont-dev/actions-hm/cache-restore@main
       with:
         registry: ${{ inputs.cache-registry }}
         registry-prefix: ${{ inputs.cache-registry-prefix }}
@@ -120,7 +120,7 @@ runs:
     # --- Cache Save ---
     - name: Save Docker cache
       if: always() && inputs.cache == 'true'
-      uses: ./cache-save
+      uses: harmont-dev/actions-hm/cache-save@main
       with:
         registry: ${{ inputs.cache-registry }}
         registry-prefix: ${{ inputs.cache-registry-prefix }}
